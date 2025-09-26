@@ -3,11 +3,10 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Product.Microservice.Dtos;
 using Product.Microservice.Dtos.Category;
-using Product.Microservice.Services;
 using Product.Microservice.Services.Interfaces;
 using Product.Microservice.Shared.Enums;
+using System.Security.Claims;
 using StatusCodes = Product.Microservice.Shared.Enums.StatusCodes;
-
 
 namespace Product.Microservice.Controllers
 {
@@ -17,11 +16,11 @@ namespace Product.Microservice.Controllers
     public class CategoriesController : ControllerBase
     {
         private readonly ICategoryService _categoryService;
-        //private readonly AuthService _authService;
-        public CategoriesController(ICategoryService categoryService)
+        private readonly IAuthService _authService;
+        public CategoriesController(ICategoryService categoryService, IAuthService authService)
         {
             _categoryService = categoryService;
-            //_authService = authService;
+            _authService = authService;
         }
 
         [HttpPost("CreateCategory")]
@@ -39,34 +38,19 @@ namespace Product.Microservice.Controllers
 
             try
             {
+                var currentUserId = GetCurrentUserId();
+                if (currentUserId == Guid.Empty)
+                {
+                    response.IsError = true;
+                    response.ErrorMessage = "User not authenticated";
+                    response.StatusCode = (int)StatusCodes.Status401Unauthorized;
+                    return response;
+                }
+
+
                 var createdCategory = await _categoryService.CreateCategoryAsync(createDto);
 
-
-                if (createdCategory.CreatedBy != null && !string.IsNullOrEmpty(createdCategory.CreatedBy) && Guid.TryParse(createdCategory.CreatedBy, out Guid userId))
-                {
-                    var token = Request.Headers.Authorization.ToString().Replace("Bearer ", "");
-                    //var userResponse = await _authService.GetUserByIdAsync(userId, token);
-                    //if (!userResponse.IsError && userResponse.Result != null)
-                    //{
-                    //    createdCategory.CreatedByName = $"{userResponse.Result.FirstName} {userResponse.Result.LastName}";
-                    //    if (createdCategory.LastModificationDate.HasValue)
-                    //    {
-                    //        if (createdCategory.CreatedBy.Equals(createdCategory.LastModificationDate.Value))
-                    //        {
-                    //            createdCategory.LastModifiedByName = $"{userResponse.Result.FirstName} {userResponse.Result.LastName}";
-                    //        }
-                    //        else
-                    //        {
-                    //            var updateUserId = Guid.Parse(createdCategory.LastModifiedBy.Trim());
-                    //            var updateUserResponse = await _authService.GetUserByIdAsync(userId, token);
-                    //            if (!updateUserResponse.IsError && updateUserResponse.Result != null)
-                    //            {
-                    //                createdCategory.LastModifiedByName = $"{updateUserResponse.Result.FirstName} {updateUserResponse.Result.LastName}";
-                    //            }
-                    //        }
-                    //    }
-                    //}
-                }
+                await EnrichCategoryWithUserData(createdCategory);               
 
                 response.IsError = false;
                 response.StatusCode = (int)StatusCodes.Status200OK;
@@ -95,31 +79,7 @@ namespace Product.Microservice.Controllers
                 return response;
             }
 
-            if (category.CreatedBy != null && !string.IsNullOrEmpty(category.CreatedBy) && Guid.TryParse(category.CreatedBy, out Guid userId))
-            {
-                var token = Request.Headers.Authorization.ToString().Replace("Bearer ", "");
-                //var userResponse = await _authService.GetUserByIdAsync(userId, token);
-                //if (!userResponse.IsError && userResponse.Result != null)
-                //{
-                //    category.CreatedByName = $"{userResponse.Result.FirstName} {userResponse.Result.LastName}";
-                //    if (category.LastModificationDate.HasValue)
-                //    {
-                //        if (category.CreatedBy.Equals(category.LastModificationDate.Value))
-                //        {
-                //            category.LastModifiedByName = $"{userResponse.Result.FirstName} {userResponse.Result.LastName}";
-                //        }
-                //        else
-                //        {
-                //            var updateUserId = Guid.Parse(category.LastModifiedBy.Trim());
-                //            var updateUserResponse = await _authService.GetUserByIdAsync(userId, token);
-                //            if (!updateUserResponse.IsError && updateUserResponse.Result != null)
-                //            {
-                //                category.LastModifiedByName = $"{updateUserResponse.Result.FirstName} {updateUserResponse.Result.LastName}";
-                //            }
-                //        }
-                //    }
-                //}
-            }
+            await EnrichCategoryWithUserData(category);           
 
 
             response.IsError = false;
@@ -205,5 +165,58 @@ namespace Product.Microservice.Controllers
             }
         }
 
-    }
+
+        private Guid GetCurrentUserId()
+        {
+            var userIdClaim = User?.Claims?.FirstOrDefault(c => c.Type == ClaimTypes.NameIdentifier || c.Type == "sub")?.Value;
+            return Guid.TryParse(userIdClaim, out Guid userId) ? userId : Guid.Empty;
+        }
+
+        private string GetAuthorizationToken()
+        {
+            var authHeader = Request.Headers.Authorization.ToString();
+            return authHeader.StartsWith("Bearer ") ? authHeader.Substring(7) : authHeader;
+        }
+
+        private async Task EnrichCategoryWithUserData(CategoryDto category)
+        {
+            if (category == null) return;
+
+            var token = GetAuthorizationToken();
+            if (string.IsNullOrEmpty(token)) return;
+
+
+            Guid createdByUserId = Guid.Empty;
+            Guid modifiedByUserId = Guid.Empty;
+
+            // Get creator information
+            if (!string.IsNullOrEmpty(category.CreatedBy) && Guid.TryParse(category.CreatedBy, out createdByUserId))
+            {
+                var userResponse = await _authService.GetUserByIdAsync(createdByUserId, token);
+                if (!userResponse.IsError && userResponse.Result != null)
+                {
+                    category.CreatedByName = $"{userResponse.Result.FirstName} {userResponse.Result.LastName}";
+                }
+            }
+
+            // Get last modified by information
+            if (category.LastModificationDate.HasValue &&
+                !string.IsNullOrEmpty(category.LastModifiedBy) &&
+                Guid.TryParse(category.LastModifiedBy, out modifiedByUserId) &&
+                modifiedByUserId != createdByUserId)
+            {
+                var modifierResponse = await _authService.GetUserByIdAsync(modifiedByUserId, token);
+                if (!modifierResponse.IsError && modifierResponse.Result != null)
+                {
+                    category.LastModifiedByName = $"{modifierResponse.Result.FirstName} {modifierResponse.Result.LastName}";
+                }
+            }
+            else if (category.LastModificationDate.HasValue && modifiedByUserId == createdByUserId)
+            {
+                // Same user modified, use the creator name
+                category.LastModifiedByName = category.CreatedByName;
+            }
+            }
+        }
+    
 }

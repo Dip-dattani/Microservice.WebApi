@@ -19,7 +19,8 @@ namespace Product.Microservice.Shared.Enums
         Status200OK = 200,
         Status201Created = 201,
         Status400BadRequest = 400,
-        Status404NotFound = 404
+        Status404NotFound = 404,
+        Status401Unauthorized = 401
     }
 
     public static class EnumExtensions
